@@ -1,0 +1,372 @@
+import time
+import re
+import threading
+from threading import Thread
+import queue
+import random
+import datetime
+import telepot
+from telepot.loop import MessageLoop
+from hal import hal_rfid_reader as rfid_reader
+from hal import hal_buzzer as buzzer
+from hal import hal_lcd as LCD
+from hal import hal_led as led
+from hal import hal_keypad as keypad
+from hal import hal_servo as servo
+
+shared_keypad_queue = queue.Queue()
+payment_successful = False
+max_books_to_reserve=10
+response=str(input)
+librarybranch = {"1234": "PlaceA", "1235": "PlaceB"}
+stop_flag = False
+p = 15
+books = [
+    "The Great Gatsby",
+    "To Kill a Mockingbird",
+    "1984",
+    "Pride and Prejudice",
+    "The Catcher in the Rye",
+    "Harry Potter and the Sorcerer's Stone",
+    "The Lord of the Rings",
+    "Animal Farm",
+    "Brave New World",
+    "Fahrenheit 451",
+    "The Hobbit",
+    "The Chronicles of Narnia",
+    "Jane Eyre",
+    "Wuthering Heights",
+    "The Da Vinci Code",
+]
+
+def get_input():
+    global stop_flag
+    global L_val
+    while True:
+        char = input()
+        if char == 'r':
+            bot.sendMessage(chat_id, text='Books returned. Thank you! ')
+            stop_flag = True
+            if L_val>0:
+                bot.sendMessage(chat_id, text=f'Loan is {L_val}')
+                reset_payment_status()
+                checkfine()
+                break
+            else:
+                bot.sendMessage(chat_id, text='No loans')
+                break
+
+def reset_payment_status():
+    global payment_successful
+    payment_successful = False
+
+def reserve_books():
+    servo.init()
+    lcd = LCD.lcd()
+    time.sleep(2)
+    while True:
+        bot.sendMessage(chat_id, text='Please proceed to the book reservation counter to reserve your books')
+        print("1234 Branch A")
+        print("\n1235 Branch B")
+        user_input = input("Enter a branch code: ")
+        if user_input in librarybranch:
+            bot.sendMessage(chat_id, text=f'You chose {user_input}')
+            reserved_books = []
+            print("Welcome to the Book Reservation System!")
+            print("You can reserve up to", max_books_to_reserve, "books.")
+            print("Here is the list of available books:")
+            for i, book in enumerate(books, 1):
+                print(f"{i}. {book}")
+
+            db = len(books)  # Initialize the database count to the total number of books
+
+            while len(reserved_books) < max_books_to_reserve:
+                choice = input("Enter the number of the book you want to reserve (or 'q' to quit): ")
+                if choice.lower() == 'q':
+                    break
+
+                try:
+                    book_index = int(choice) - 1
+                    if 0 <= book_index < len(books):
+                        selected_book = books[book_index]
+                        if selected_book not in reserved_books:
+                            reserved_books.append(selected_book)
+                            db -= 1  # Subtract reserved book from the database count
+                            print(f"Reserved book: {selected_book}")
+                        else:
+                            print("You have already reserved this book.")
+                    else:
+                        print("Invalid selection.")
+                except ValueError:
+                    print("Invalid input. Please enter a number.")
+
+            print("Thank you for using the Book Reservation System!")
+
+            print("Your reserved books:")
+            bot.sendMessage(chat_id, text=f'Books reserved: ')
+            for i, book in enumerate(reserved_books, 1):
+                print(f"{i}. {book}")
+                bot.sendMessage(chat_id, text=f'{i}. {book}')
+
+            R = 0
+            number_of_days = 5
+            is_countdown_running = True
+
+            def countdown():
+                nonlocal R
+                while R < number_of_days and is_countdown_running:
+                    R += 1
+                    print("Day waiting", R)
+                    for x in range(number_of_days, 0, -1):
+                        seconds = int(x % 60)
+                        minutes = int((x / 60) % 60)
+                        hours = int(x / 3600)
+                        print(f"{hours:02}:{minutes:02}:{seconds:02}")
+                        time.sleep(1)
+                        if not is_countdown_running:
+                            break
+
+                    if R >= 5:
+                        print("Books collection date is up")
+                        print("Books return back to database")
+                        break
+                    if is_countdown_running:
+                        print("Day has ended")
+
+            countdown_thread = threading.Thread(target=countdown)
+            countdown_thread.start()
+
+            while True:
+                response = input("\nType 'c' to collect the reserved books ")
+                if response.lower() == 'c':
+                    is_countdown_running = False
+                    countdown_thread.join()  # Wait for the countdown thread to finish
+                    p = 15
+                    bks = float(p - db)
+                    print("Books collected. Reserved books subtracted from the database:", bks)
+                    lcd.lcd_clear()
+                    lcd.lcd_display_string("dispensing", 1)
+                    lcd.lcd_display_string("books...", 2)
+                    servo.set_servo_position(20)
+                    time.sleep(0.5)
+                    servo.set_servo_position(120)
+                    time.sleep(0.5)
+                    servo.set_servo_position(20)
+                    lcd.lcd_clear()
+                    Loanvalue(bks)
+                    break
+            break
+        else:
+            print("Invalid branch code. Please try again.")
+
+
+def Loanvalue(bks):
+    global stop_flag
+    global L_val
+    D = 0
+    X = 0
+    R = 0
+
+    input_thread = threading.Thread(target=get_input)
+    input_thread.start()
+
+    while not stop_flag:
+        if R == 0:
+            # Check for extending the loan period
+            a = input("Would you like to extend your loan period by 7 days? (Y/N): ")
+            ansa = ["Y", "N"]
+            while a not in ansa:
+                a = input("Would you like to extend your loan period by 7 days? (Y/N): ")
+            if a == "Y":
+                X = 1
+                R = 1
+            elif a == "N":
+                X = 0
+                R = 1
+        else:
+            time.sleep(0.9)
+
+        # Print loan values based on loan period
+        if X == 0:
+            if D > 18:
+                D = D + 1
+                L = round((D - 18) * 0.15 * bks, 2)
+                L_val=L
+                print("Loan is " + str(L))
+                print("Days is " + str(D))
+            else:
+                D = D + 1
+                print("Days is " + str(D))
+        if X == 1:
+            if D > 25:
+                D = D + 1
+                L = round((D - 25) * 0.15 * bks, 2)
+                L_val=L
+                print("Loan is " + str(L))
+                print("Days is " + str(D))
+            else:
+                D = D + 1
+                print("Days is " + str(D))
+
+    # Join the input thread to make sure it's finished before exiting
+    input_thread.join()
+
+
+def checkfine():
+    global payment_successful  # Declare payment_successful as a global variable
+
+    # initialization of HAL modules
+    led.init()
+    reader = rfid_reader.init()
+
+    keypad.init(key_pressed)
+    keypad_thread = Thread(target=keypad.get_key)
+    keypad_thread.start()
+
+    lcd = LCD.lcd()
+    lcd.lcd_clear()
+
+    lcd.lcd_display_string("fine detected", 1)  # after scanning barcode req 6
+    bot.sendMessage(chat_id, text='Please proceed to the payment counter to pay fine')
+    time.sleep(2)
+
+    while not payment_successful:
+        lcd.lcd_clear()
+        lcd.lcd_display_string("Pay", 1)
+        lcd.lcd_display_string("overdue fine", 2)
+
+        print("scan card and press 1 on keypad to continue")
+        keyvalue = shared_keypad_queue.get()
+
+        print("key value ", keyvalue)
+
+        if keyvalue == 1:
+            lcd.lcd_display_string("scan card " + str(keyvalue), 1)
+            id = reader.read_id_no_block()
+            id = str(id)
+
+            if id and is_numeric(id):
+                print("RFID card ID = " + id)
+                # Display id
+                lcd.lcd_clear()
+                lcd.lcd_display_string("Processing... ", 1)
+                lcd.lcd_display_string("Please wait ", 2)
+                time.sleep(2)
+                lcd.lcd_clear()
+                lcd.lcd_display_string("payment", 1)
+                lcd.lcd_display_string("successful", 2)
+                lcd.lcd_clear()
+                bot.sendMessage(chat_id, text='Fine successfully paid')
+                led.set_output(1, 1)
+                time.sleep(2)
+                led.set_output(1, 0)
+                time.sleep(1)
+
+                # Set the flag to stop the loop
+                payment_successful = True
+
+            else:
+                lcd.lcd_clear()
+                lcd.lcd_display_string("Error", 1)
+                lcd.lcd_display_string("wrong card", 2)
+
+        else:
+            lcd.lcd_clear()
+            lcd.lcd_display_string("error", 1)
+            lcd.lcd_display_string("try again", 2)
+            time.sleep(2)
+
+        time.sleep(1)
+
+
+def key_pressed(key):
+    shared_keypad_queue.put(key)
+
+
+def is_numeric(input_string):
+    return bool(re.match("^[0-9]+$", input_string))
+
+
+def handle(msg):
+    global chat_id
+    global command
+    chat_id = msg['chat']['id']
+    command = msg['text']
+
+    print('Got command: %s' % command)
+
+    if command == '/start':
+        time.sleep(1)
+        bot.sendMessage(chat_id, text='Welcome to the Library Book Reservation System!')
+        scan_card()
+        time.sleep(2)
+        checkfine()
+        time.sleep(1)
+        reserve_books()
+
+
+def scan_card():
+    reader = rfid_reader.init()
+    buzzer.init()
+    lcd = LCD.lcd()
+    lcd.lcd_clear()
+
+    lcd.lcd_display_string("Library System", 1)
+    lcd.lcd_display_string("Scan your card", 2)
+
+    time.sleep(2)
+
+    card_scanned = False  # Add a flag to control the loop
+
+    while not card_scanned:
+        lcd.lcd_clear()  #
+        lcd.lcd_display_string("Please scan card!", 1)
+        time.sleep(2)
+
+        print("Waiting for card scan...")
+        id = reader.read_id_no_block()
+        id = str(id)
+        if id and is_numeric(id):
+            lcd.lcd_clear()
+            lcd.lcd_display_string("Card detected!", 1)
+            buzzer.beep(0.5, 0.5, 1)
+            print("RFID card ID = " + id)
+
+            # Display ID
+            lcd.lcd_display_string("ID: " + str(id), 2)
+            time.sleep(1)
+            bot.sendMessage(chat_id, text='User successfully logged in')
+            break  # Exit the while loop
+        else:
+            print("scan card")
+            lcd.lcd_clear()
+            lcd.lcd_display_string("No card")
+            time.sleep(1)
+
+        time.sleep(1)
+
+
+def main():
+    # Create two threads for scan_card and handle functions
+    scan_thread = threading.Thread(target=scan_card)
+    handle_thread = threading.Thread(target=handle)
+
+    # Start both threads
+    scan_thread.start()
+    handle_thread.start()
+
+    # Wait for both threads to finish
+    scan_thread.join()
+    handle_thread.join()
+
+
+bot = telepot.Bot('5920673413:AAFNk3BVGahZ5dL4QsfSjTV9NM1252LfgbU')
+
+MessageLoop(bot, handle).run_as_thread()
+print('I am listening ...')
+
+while 1:
+    time.sleep(10)
+
+if __name__ == '__main__':
+    main()
